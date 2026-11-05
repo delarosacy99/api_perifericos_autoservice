@@ -63,7 +63,7 @@ def env_float(name: str, default: float) -> float:
 
 
 APP_NAME = "api_perifericos_autoservice"
-APP_VERSION = "0.8.6"
+APP_VERSION = "0.8.7"
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "development-only-change-me")
 DEBUG = env_bool("DJANGO_DEBUG", True)
@@ -87,6 +87,7 @@ INSTALLED_APPS = [
     "apps.card_reader",
     "apps.door_monitor",
     "apps.printer_monitor",
+    "apps.station_cash",
 ]
 
 MIDDLEWARE = [
@@ -138,10 +139,21 @@ CHANNEL_LAYERS = {
 }
 
 STATION_ID = os.getenv("STATION_ID", "AUTOSERVICE-DEV-001")
+CENTRAL_SYNC_ENABLED = env_bool("CENTRAL_SYNC_ENABLED", False)
+CENTRAL_API_BASE_URL = os.getenv("CENTRAL_API_BASE_URL", "").strip()
+CENTRAL_AGENT_CREDENTIAL = os.getenv("CENTRAL_AGENT_CREDENTIAL", "").strip()
+CENTRAL_TIMEOUT_SECONDS = env_float("CENTRAL_TIMEOUT_SECONDS", 8.0)
+FRONTEND_HEARTBEAT_TIMEOUT_SECONDS = env_int("FRONTEND_HEARTBEAT_TIMEOUT_SECONDS", 20)
+if CENTRAL_SYNC_ENABLED and (not CENTRAL_API_BASE_URL or not CENTRAL_AGENT_CREDENTIAL):
+    raise ImproperlyConfigured("Configure CENTRAL_API_BASE_URL y CENTRAL_AGENT_CREDENTIAL")
+if CENTRAL_TIMEOUT_SECONDS <= 0 or FRONTEND_HEARTBEAT_TIMEOUT_SECONDS < 10:
+    raise ImproperlyConfigured("Tiempos de sincronización inválidos")
 STATION_COUNTRY_CODE = os.getenv("STATION_COUNTRY_CODE", "DO").upper()
 STATION_TIMEZONE = TIME_ZONE
 
 CASH_ACCEPTOR_DRIVER = os.getenv("CASH_ACCEPTOR_DRIVER", "simulator").lower()
+if CENTRAL_SYNC_ENABLED and not DEBUG and CASH_ACCEPTOR_DRIVER == "simulator":
+    raise ImproperlyConfigured("La sincronización productiva requiere billetero real")
 CASH_CURRENCY = os.getenv("CASH_CURRENCY", "USD").upper()
 CASH_EXPECTED_DATASET_CURRENCY = os.getenv("CASH_EXPECTED_DATASET_CURRENCY", CASH_CURRENCY).upper()
 CASH_ACCEPT_ALL_DATASET_DENOMINATIONS = env_bool("CASH_ACCEPT_ALL_DATASET_DENOMINATIONS", True)
@@ -165,6 +177,8 @@ NV200_MIN_PROTOCOL_VERSION = env_int("NV200_MIN_PROTOCOL_VERSION", 6)
 NV200_MAX_PROTOCOL_VERSION = env_int("NV200_MAX_PROTOCOL_VERSION", 20)
 NV200_FIXED_KEY = env_int("NV200_FIXED_KEY", 0x0123456701234567)
 NV200_POLL_WITH_ACK = env_bool("NV200_POLL_WITH_ACK", True)
+if CENTRAL_SYNC_ENABLED and not NV200_POLL_WITH_ACK:
+    raise ImproperlyConfigured("La sincronización requiere NV200_POLL_WITH_ACK=true")
 NV200_POLL_INTERVAL_SECONDS = env_float("NV200_POLL_INTERVAL_SECONDS", 0.2)
 
 CARD_READER_DRIVER = os.getenv("CARD_READER_DRIVER", "simulator").lower()

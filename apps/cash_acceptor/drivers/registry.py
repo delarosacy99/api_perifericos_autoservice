@@ -29,6 +29,7 @@ def get_cash_acceptor() -> CashAcceptorDriver:
                 maximum_protocol_version=settings.NV200_MAX_PROTOCOL_VERSION,
                 fixed_key=settings.NV200_FIXED_KEY,
                 poll_with_ack=settings.NV200_POLL_WITH_ACK,
+                journal_path=str(settings.BASE_DIR / "var" / "nv200-ack.json") if settings.CENTRAL_SYNC_ENABLED else "",
             )
         )
     raise ImproperlyConfigured(

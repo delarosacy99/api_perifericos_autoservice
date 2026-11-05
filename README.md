@@ -1,5 +1,12 @@
 # api_perifericos_autoservice
 
+Versión 0.8.7: integración de fondos por atención con la API central mediante
+`CENTRAL_SYNC_ENABLED=true`. Los comandos de recepción usan `/api/v1/station/attentions/`
+y las notificaciones `/ws/v1/cash/`. El saldo de negocio pertenece a la API central;
+el agente conserva el diario del dispositivo y reintenta sus confirmaciones.
+La instalación y el contrato del frontend se detallan en `GUIA_PASO_3.md`, incluido
+en la raíz del paquete de actualización.
+
 Agente local para controlar y monitorear los periféricos de una estación de autoservicio en
 Windows 11. La aplicación web puede ejecutarse desde Tauri, Electron o un navegador en modo
 kiosco, mientras este servicio mantiene acceso exclusivo a los dispositivos locales.

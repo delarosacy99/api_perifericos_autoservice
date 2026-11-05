@@ -7,6 +7,7 @@ if not defined BIND_PORT set "BIND_PORT=8765"
 
 cd /d "%PROJECT_DIR%" || exit /b 2
 if not exist "logs" mkdir "logs"
+if not exist "var" mkdir "var"
 
 set "PYTHON_EXE=%PROJECT_DIR%.venv\Scripts\python.exe"
 set "LOG_FILE=%PROJECT_DIR%logs\daphne.log"
@@ -18,6 +19,11 @@ if not exist "%PYTHON_EXE%" (
 )
 
 :restart_daphne
+"%PYTHON_EXE%" manage.py migrate --noinput >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    echo [%date% %time%] ERROR: Migracion pendiente. No se habilita el billetero.>> "%LOG_FILE%"
+    exit /b 4
+)
 echo [%date% %time%] Iniciando Daphne en 127.0.0.1:%BIND_PORT%.>> "%LOG_FILE%"
 "%PYTHON_EXE%" -m daphne -b 127.0.0.1 -p %BIND_PORT% config.asgi:application >> "%LOG_FILE%" 2>&1
 set "DAPHNE_EXIT_CODE=%ERRORLEVEL%"

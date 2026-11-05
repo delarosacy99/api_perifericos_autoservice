@@ -76,6 +76,7 @@ class NV200Config:
     maximum_protocol_version: int = 20
     fixed_key: int = SSPClient.DEFAULT_FIXED_KEY
     poll_with_ack: bool = True
+    journal_path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,17 +207,49 @@ class NV200ESSPDriver(CashAcceptorDriver):
         self._protocol_version = 0
         self._channels: tuple[CashChannel, ...] = ()
         self._pending_batch: NV200PollBatch | None = None
+        from .journal import HardwareJournal
+
+        self._journal = HardwareJournal(config.journal_path) if config.journal_path else None
+        self._journal_error = None
+        try:
+            self._journal_data = self._journal.read() if self._journal else None
+        except CashAcceptorProtocolError as exc:
+            # Still connect and DISABLE the physical device before refusing recovery.
+            self._journal_error = exc
+            self._journal_data = None
+        self._ack_uncertain = bool(self._journal_data and self._journal_data["stage"] == "ack_intent")
+        if self._journal_data and self._journal_data["stage"] != "acked":
+            try:
+                data = self._journal_data
+                self._serial_number = data["serial_number"]
+                self._pending_batch = NV200PollBatch(
+                    batch_id=data["batch_id"],
+                    events=tuple(
+                        NV200PollEvent(e["code"], e["name"], bytes.fromhex(e["data"]))
+                        for e in data["events"]
+                    ),
+                    note_credits=tuple(NoteCreditEvent(**n) for n in data["notes"]),
+                    requires_ack=True,
+                )
+            except (KeyError, TypeError, ValueError):
+                self._journal_error = CashAcceptorProtocolError("El diario NV200 requiere revisión técnica.")
+                self._pending_batch = None
         self._cashbox_present: bool | None = None
         self._active_alerts: set[str] = set()
+        self.note_inflight = False
 
     def connect(self) -> CashAcceptorSnapshot:
         with self._lock:
             if self._connected:
+                self._require_journal_safe()
                 return self.snapshot()
             previous_serial_number = self._serial_number
             try:
                 self._client.open()
                 self._client.negotiate_keys()
+                self._client.command(CMD_DISABLE)
+                self._accepting = False
+                self._require_journal_safe()
                 self._protocol_version = self._select_highest_protocol()
                 setup = parse_setup_response(self._client.command(CMD_SETUP_REQUEST))
                 if setup.unit_type != 0x00:
@@ -260,6 +293,14 @@ class NV200ESSPDriver(CashAcceptorDriver):
                     f"Falló la conexión eSSP con el NV200: {exc}"
                 ) from exc
 
+    def _require_journal_safe(self):
+        if self._journal_error:
+            raise self._journal_error
+        if self._ack_uncertain:
+            raise CashAcceptorProtocolError(
+                "ACK NV200 incierto tras reinicio: conserve el diario y concilie con soporte antes de habilitar."
+            )
+
     def disconnect(self) -> None:
         with self._lock:
             if self._connected:
@@ -290,6 +331,7 @@ class NV200ESSPDriver(CashAcceptorDriver):
         denominations_minor: set[int] | None = None,
     ) -> tuple[int, ...]:
         with self._lock:
+            self._require_journal_safe()
             self._require_connected()
             if self._cashbox_present is False:
                 raise CashAcceptorProtocolError(
@@ -352,6 +394,7 @@ class NV200ESSPDriver(CashAcceptorDriver):
 
     def poll_once(self, *, allow_disabled: bool = False) -> NV200PollBatch:
         with self._lock:
+            self._require_journal_safe()
             self._require_connected()
             if not self._accepting and not allow_disabled:
                 raise CashAcceptorNotAccepting("El NV200 no está aceptando billetes.")
@@ -370,6 +413,16 @@ class NV200ESSPDriver(CashAcceptorDriver):
             note_credits = []
             state_changes = []
             for event_index, event in enumerate(events):
+                if event.name in {"NOTE_READ", "NOTE_STACKING", "NOTE_REJECTING"}:
+                    self.note_inflight = True
+                elif event.name in {
+                    "NOTE_CREDIT",
+                    "NOTE_STACKED",
+                    "NOTE_REJECTED",
+                    "NOTE_CLEARED_FROM_FRONT",
+                    "NOTE_CLEARED_TO_CASHBOX",
+                }:
+                    self.note_inflight = False
                 if event.name == "CASHBOX_REMOVED":
                     if self._cashbox_present is not False:
                         state_changes.append(event.name)
@@ -420,11 +473,26 @@ class NV200ESSPDriver(CashAcceptorDriver):
                 state_changes=tuple(state_changes),
             )
             if batch.requires_ack:
+                if self._journal:
+                    from dataclasses import asdict
+
+                    self._journal_data = {
+                        "stage": "pending",
+                        "serial_number": self._serial_number,
+                        "batch_id": batch.batch_id,
+                        "events": [
+                            {"code": e.code, "name": e.name, "data": e.data.hex()}
+                            for e in batch.events
+                        ],
+                        "notes": [asdict(n) for n in batch.note_credits],
+                    }
+                    self._journal.write(self._journal_data)
                 self._pending_batch = batch
             return batch
 
     def acknowledge_events(self, batch_id: str) -> None:
         with self._lock:
+            self._require_journal_safe()
             if self._pending_batch is None:
                 return
             if self._pending_batch.batch_id != batch_id:
@@ -432,10 +500,20 @@ class NV200ESSPDriver(CashAcceptorDriver):
                     "El lote POLL pendiente no coincide con el ACK solicitado."
                 )
             try:
+                if self._journal:
+                    self._journal_data["stage"] = "ack_intent"
+                    self._journal.write(self._journal_data)
                 self._client.command(CMD_EVENT_ACK)
-            except SSPError as exc:
+                if self._journal:
+                    self._journal_data["stage"] = "acked"
+                    self._journal.write(self._journal_data)
+            except Exception as exc:
+                if self._journal:
+                    self._ack_uncertain = True
                 self._safe_close(clear_pending=False)
-                raise CashAcceptorConnectionError(f"Falló EVENT ACK del NV200: {exc}") from exc
+                if isinstance(exc, SSPError):
+                    raise CashAcceptorConnectionError(f"Falló EVENT ACK del NV200: {exc}") from exc
+                raise
             self._pending_batch = None
 
     def _select_highest_protocol(self) -> int:
@@ -477,6 +555,6 @@ class NV200ESSPDriver(CashAcceptorDriver):
             logger.warning("No se pudo cerrar el transporte eSSP.", exc_info=True)
         self._connected = False
         self._accepting = False
-        if clear_pending:
+        if clear_pending and not self._journal:
             self._pending_batch = None
         self._channels = tuple(replace(channel, enabled=False) for channel in self._channels)

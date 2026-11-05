@@ -1,6 +1,7 @@
 from django.urls import include, path
 
 urlpatterns = [
+    path("api/v1/station/", include("apps.station_cash.urls")),
     path("api/v1/", include("apps.core.urls")),
     path("api/v1/", include("apps.stations.urls")),
     path("api/v1/", include("apps.cash_acceptor.urls")),

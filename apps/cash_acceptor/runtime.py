@@ -29,6 +29,19 @@ class CashAcceptorPoller:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._thread_lock = threading.Lock()
+        self.faulted = False
+
+    def fail_closed(self):
+        self.faulted = True
+        try:
+            self._driver_factory().disable()
+        except Exception:
+            logger.error("No fue posible confirmar la inhibición física del billetero.")
+
+    def resume(self):
+        # Called only after a new collection has committed successfully.
+        self.faulted = False
+        self.ensure_running()
 
     def ensure_running(self) -> None:
         driver = self._driver_factory()
@@ -65,6 +78,9 @@ class CashAcceptorPoller:
             return False
 
         with CASH_ACCEPTOR_OPERATION_LOCK:
+            if self.faulted:
+                driver.disable()
+                return False
             collection = CashCollectionSession.objects.filter(
                 status=CashCollectionSession.Status.ACCEPTING
             ).first()
@@ -77,6 +93,16 @@ class CashAcceptorPoller:
                 return False
 
             snapshot = driver.snapshot()
+            if settings.CENTRAL_SYNC_ENABLED:
+                from datetime import timedelta
+                from django.utils import timezone
+                from apps.station_cash.models import AttentionBinding
+                binding = AttentionBinding.objects.filter(collection=collection, sealed=False).first()
+                if (not binding or binding.last_error or collection.metadata.get("inhibit_requested")
+                    or binding.heartbeat_at < timezone.now() - timedelta(seconds=settings.FRONTEND_HEARTBEAT_TIMEOUT_SECONDS)):
+                    from .services import stop_collection
+                    stop_collection(collection.pk, reason="frontend_disconnected")
+                    return False
             if not snapshot.connected or not snapshot.accepting:
                 from .services import connect_and_enable_collection_hardware
 
@@ -137,6 +163,8 @@ class CashAcceptorPoller:
                 close_old_connections()
                 was_polled = self.process_once()
             except Exception:
+                if settings.CENTRAL_SYNC_ENABLED:
+                    self.fail_closed()
                 logger.exception("Falló un ciclo de polling del NV200.")
                 was_polled = False
             finally:

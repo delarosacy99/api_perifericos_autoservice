@@ -63,6 +63,8 @@ class CashCollectionViewSet(GenericViewSet):
         return Response(self.get_serializer(self.get_object()).data)
 
     def create(self, request):
+        if settings.CENTRAL_SYNC_ENABLED:
+            return Response({"error": {"code": "use_station_attention"}}, status=409)
         input_serializer = CreateCashCollectionSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
         try:
@@ -78,6 +80,8 @@ class CashCollectionViewSet(GenericViewSet):
 
     @action(detail=True, methods=["post"])
     def start(self, request, pk=None):
+        if settings.CENTRAL_SYNC_ENABLED:
+            return Response({"error": {"code": "use_station_attention"}}, status=409)
         try:
             collection = start_collection(pk)
         except CashCollectionSession.DoesNotExist as exc:
