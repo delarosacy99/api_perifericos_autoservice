@@ -30,6 +30,11 @@ class StationConfigurationView(APIView):
                     "baud_rate": settings.CRT603_BAUD_RATE,
                     "credential_application_id": settings.CARD_CREDENTIAL_APPLICATION_ID,
                 },
+                "events": {
+                    "websocket_path": "/ws/v1/station/events/",
+                    "requires_attention": False,
+                    "central_door_sync_enabled": settings.CENTRAL_SYNC_ENABLED,
+                },
                 "door": {
                     "id": "front",
                     "name": "Puerta frontal",
@@ -52,8 +57,6 @@ class StationConfigurationView(APIView):
                     ),
                 },
                 "printer": {
-                    "output_provider": "jsprintmanager" if settings.BRIDGE_ENABLED else None,
-                    "jsprintmanager_printer_name": settings.JSPM_PRINTER_NAME,
                     "driver": settings.PRINTER_MONITOR_DRIVER,
                     "model": (
                         "CUSTOM K80"
@@ -64,7 +67,7 @@ class StationConfigurationView(APIView):
                     "printer_name": settings.CUSTOM_K80_PRINTER_NAME,
                     "interface": "usb",
                     "monitoring_only": True,
-                    "printing_enabled": settings.BRIDGE_ENABLED,
+                    "printing_enabled": False,
                     "remaining_paper_query_enabled": (
                         settings.CUSTOM_K80_QUERY_REMAINING_PAPER
                         and settings.PRINTER_MONITOR_DRIVER == "custom_k80_cesmlm"
@@ -77,9 +80,6 @@ class StationConfigurationView(APIView):
                     ),
                 },
                 "capabilities": {
-                    "frontend_bridge": settings.BRIDGE_ENABLED,
-                    "websocket_events": settings.BRIDGE_ENABLED,
-                    "central_sync": settings.BRIDGE_ENABLED,
                     "cash_collection": True,
                     "rfid_membership": False,
                     "card_inspection": True,
@@ -91,8 +91,8 @@ class StationConfigurationView(APIView):
                     "door_monitoring": True,
                     "door_actuation": False,
                     "printer_monitoring": True,
-                    "printer_output": settings.BRIDGE_ENABLED,
-                    "session_inactivity_timeout": settings.BRIDGE_ENABLED,
+                    "printer_output": False,
+                    "session_inactivity_timeout": False,
                     "business_rules": False,
                     "financial_ledger": False,
                 },

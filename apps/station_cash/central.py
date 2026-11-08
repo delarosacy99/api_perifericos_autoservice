@@ -18,7 +18,7 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def central_call(attention_id, suffix="", data=None):
+def _request(relative_path, *, data, expected_field, expected_value):
     base = settings.CENTRAL_API_BASE_URL.rstrip("/") + "/"
     url = urlsplit(base)
     if not settings.CENTRAL_SYNC_ENABLED or not settings.CENTRAL_AGENT_CREDENTIAL:
@@ -27,8 +27,8 @@ def central_call(attention_id, suffix="", data=None):
         raise CashSyncError("invalid_central_url")
     if url.scheme != "https" and not (settings.DEBUG and url.scheme == "http" and url.hostname in {"127.0.0.1", "localhost", "::1"}):
         raise CashSyncError("central_https_required")
-    # Callers supply only UUIDs and fixed suffixes, never arbitrary URLs.
-    request = Request(base + f"agent/attentions/{attention_id}/" + suffix,
+    # All paths below are built by internal wrappers from fixed routes and UUIDs.
+    request = Request(base + relative_path,
         data=None if data is None else json.dumps(data).encode(),
         headers={"Authorization": "AutoserviceAgent " + settings.CENTRAL_AGENT_CREDENTIAL, "Content-Type": "application/json"},
         method="GET" if data is None else "POST")
@@ -39,7 +39,7 @@ def central_call(attention_id, suffix="", data=None):
             if len(body) > 1_048_576:
                 raise CashSyncError("central_response_too_large")
             value = json.loads(body)
-            if not isinstance(value, dict) or str(value.get("attention_id")) != str(attention_id):
+            if not isinstance(value, dict) or str(value.get(expected_field)) != str(expected_value):
                 raise CashSyncError("central_invalid_response")
             return value
     except HTTPError as exc:
@@ -54,3 +54,13 @@ def central_call(attention_id, suffix="", data=None):
     except (URLError, OSError, ValueError):
         # Do not log headers, credentials, request bodies, URLs or raw server errors.
         raise CashSyncError("central_unavailable") from None
+
+
+def central_call(attention_id, suffix="", data=None):
+    return _request(f"agent/attentions/{attention_id}/" + suffix, data=data,
+                    expected_field="attention_id", expected_value=attention_id)
+
+
+def central_door_event(data):
+    return _request("agent/device-events/door/", data=data,
+                    expected_field="event_id", expected_value=data["event_id"])

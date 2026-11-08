@@ -7,6 +7,7 @@ class DoorMonitorState(models.Model):
         OPEN = "open", "Abierta"
         CLOSED = "closed", "Cerrada"
 
+    event_sequence = models.PositiveBigIntegerField(default=0)
     door_id = models.CharField(max_length=32, primary_key=True)
     door_name = models.CharField(max_length=100)
     coverage = models.CharField(max_length=50)

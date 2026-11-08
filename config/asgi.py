@@ -11,7 +11,8 @@ django_application = get_asgi_application()
 from channels.routing import ProtocolTypeRouter, URLRouter
 from django.urls import path
 from apps.station_cash.consumers import CashEventsConsumer
-application = ProtocolTypeRouter({"http": django_application, "websocket": URLRouter([path("ws/v1/cash/", CashEventsConsumer.as_asgi())])})
+from apps.door_monitor.consumers import StationEventsConsumer
+application = ProtocolTypeRouter({"http": django_application, "websocket": URLRouter([path("ws/v1/cash/", CashEventsConsumer.as_asgi()), path("ws/v1/station/events/", StationEventsConsumer.as_asgi())])})
 
 
 def _is_server_process() -> bool:
@@ -31,3 +32,5 @@ if settings.DOOR_MONITOR_BACKGROUND_ENABLED and _is_server_process():
 if settings.CENTRAL_SYNC_ENABLED and _is_server_process():
     from apps.station_cash.runtime import start_sync_worker
     start_sync_worker()
+    from apps.door_monitor.sync import start_door_sync_worker
+    start_door_sync_worker()

@@ -97,7 +97,7 @@ class DoorMonitorPoller:
         self._failure_count = 0
         self._success_count += 1
 
-        if observation.state in {"open", "closed"}:
+        if observation.state in {"open", "closed", "unknown"}:
             if observation.state == self._candidate_state:
                 self._candidate_count += 1
             else:

@@ -34,6 +34,9 @@ class Command(BaseCommand):
                 "payload": event.payload,
                 "occurred_at": event.occurred_at,
                 "delivered_at": event.delivered_at,
+                "attempts": event.attempts,
+                "last_error": event.last_error,
+                "retry_at": event.retry_at,
             }
             for event in events
         ]

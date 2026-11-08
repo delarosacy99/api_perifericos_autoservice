@@ -130,3 +130,24 @@ class DoorMonitorPollerTestCase(TestCase):
                 "door.front.recovered",
             ],
         )
+
+    def test_unknown_reading_replaces_the_previous_stable_state(self):
+        poller = self.make_poller([
+            observation("closed", "00"), observation("closed", "00"),
+            observation("unknown", "FF"), observation("unknown", "FF"),
+        ])
+        for _ in range(4):
+            poller.process_once()
+        state = DoorMonitorState.objects.get(pk="front")
+        self.assertEqual(state.state, "unknown")
+        event = OutboxEvent.objects.get(topic="door.front.unknown")
+        self.assertIsNone(event.payload["is_open"])
+        self.assertEqual(event.payload["sequence"], 2)
+
+    def test_initial_unknown_state_is_published_without_claiming_closed(self):
+        poller = self.make_poller([observation("unknown", "FF"), observation("unknown", "FF")])
+        poller.process_once()
+        poller.process_once()
+        event = OutboxEvent.objects.get(topic="door.front.snapshot")
+        self.assertEqual(event.payload["state"], "unknown")
+        self.assertIsNone(event.payload["is_open"])

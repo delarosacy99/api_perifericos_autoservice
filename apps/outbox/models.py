@@ -11,6 +11,7 @@ class OutboxEvent(models.Model):
     payload = models.JSONField(default=dict)
     occurred_at = models.DateTimeField(auto_now_add=True, db_index=True)
     delivered_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    retry_at = models.DateTimeField(null=True, blank=True)
     attempts = models.PositiveIntegerField(default=0)
     last_error = models.TextField(blank=True)
 

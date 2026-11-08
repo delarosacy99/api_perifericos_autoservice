@@ -16,6 +16,13 @@ def serialize_observation(observation: DoorObservation) -> dict:
     return payload
 
 
+def _enqueue_door_event(*, monitor_state, topic, aggregate_type, aggregate_id, payload):
+    monitor_state.event_sequence += 1
+    monitor_state.save(update_fields=["event_sequence"])
+    return enqueue_event(topic=topic, aggregate_type=aggregate_type, aggregate_id=aggregate_id,
+                         payload={**payload, "sequence": monitor_state.event_sequence})
+
+
 def _event_payload(
     state: DoorMonitorState,
     *,
@@ -23,6 +30,7 @@ def _event_payload(
     initial_observation: bool = False,
 ) -> dict:
     payload = {
+        "sequence": state.event_sequence,
         "station_id": settings.STATION_ID,
         "door_id": state.door_id,
         "door_name": state.door_name,
@@ -80,8 +88,9 @@ def record_door_observation(
         in {
             DoorMonitorState.State.OPEN,
             DoorMonitorState.State.CLOSED,
+            DoorMonitorState.State.UNKNOWN,
         }
-        and stable_state != previous_state
+        and (stable_state != previous_state or created)
     )
     if state_changed:
         monitor_state.state = stable_state
@@ -90,7 +99,8 @@ def record_door_observation(
     monitor_state.save()
 
     if not created and not was_connected:
-        enqueue_event(
+        _enqueue_door_event(
+            monitor_state=monitor_state,
             topic="door.front.recovered",
             aggregate_type="door",
             aggregate_id=monitor_state.door_id,
@@ -98,15 +108,18 @@ def record_door_observation(
         )
 
     if state_changed:
-        initial_observation = previous_state == DoorMonitorState.State.UNKNOWN
+        initial_observation = created or previous_state == DoorMonitorState.State.UNKNOWN
         topic = (
             "door.front.snapshot"
             if initial_observation
             else "door.front.opened"
             if stable_state == DoorMonitorState.State.OPEN
             else "door.front.closed"
+            if stable_state == DoorMonitorState.State.CLOSED
+            else "door.front.unknown"
         )
-        enqueue_event(
+        _enqueue_door_event(
+            monitor_state=monitor_state,
             topic=topic,
             aggregate_type="door",
             aggregate_id=monitor_state.door_id,
@@ -136,13 +149,15 @@ def record_door_disconnection(*, door_id: str, error: str) -> DoorMonitorState:
 
     was_connected = monitor_state.connected
     monitor_state.connected = False
+    error = str(error)[:2000]
     monitor_state.last_error = error
     if created or was_connected:
         monitor_state.connection_changed_at = now
     monitor_state.save()
 
     if created or was_connected:
-        enqueue_event(
+        _enqueue_door_event(
+            monitor_state=monitor_state,
             topic="door.front.disconnected",
             aggregate_type="door",
             aggregate_id=monitor_state.door_id,
