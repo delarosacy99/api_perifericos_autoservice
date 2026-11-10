@@ -63,8 +63,13 @@ class CashSyncTests(TestCase):
         reset_cash_acceptor_poller()
         reset_cash_acceptor()
         self.central = FakeCentral()
+        self.control_patch = patch("apps.station_cash.control._stream")
+        self.control = self.control_patch.start()
+        self.control.is_authorized.return_value = True
+        self.control.error = ""
+        self.addCleanup(self.control_patch.stop)
         self.stub = patch("apps.station_cash.services.central_call", side_effect=self.central)
-        self.stub.start()
+        self.central_call_mock = self.stub.start()
         self.addCleanup(self.stub.stop)
         self.addCleanup(reset_cash_acceptor_poller)
         self.addCleanup(reset_cash_acceptor)
@@ -116,12 +121,54 @@ class CashSyncTests(TestCase):
         self.assertEqual(self.central.credits, {str(note.pk): 500})
         self.assertEqual(cash.snapshot(AttentionBinding.objects.get())['pending_cash_events'], 0)
 
+    def test_idle_cycles_do_not_send_http_permission_requests(self):
+        self.start()
+        self.central_call_mock.reset_mock()
+        for _ in range(3):
+            self.assertIsNone(cash.worker_cycle())
+        self.central_call_mock.assert_not_called()
+
+    def test_committed_bill_wakes_sync_worker_and_rollback_does_not(self):
+        binding = self.start()
+        from django.db import transaction
+        with patch("apps.station_cash.runtime.wake_sync_worker") as wake:
+            with self.captureOnCommitCallbacks(execute=True):
+                self.note(binding)
+                wake.assert_not_called()
+            wake.assert_called_once()
+            wake.reset_mock()
+            with self.captureOnCommitCallbacks(execute=True):
+                with self.assertRaises(ValueError), transaction.atomic():
+                    self.note(binding)
+                    raise ValueError("rollback")
+            wake.assert_not_called()
+
+    def test_old_retry_deadline_without_undelivered_notes_does_not_busy_loop(self):
+        binding = self.start()
+        AttentionBinding.objects.filter(pk=binding.pk).update(retry_at=timezone.now() - timedelta(seconds=1))
+        self.central_call_mock.reset_mock()
+        self.assertIsNone(cash.worker_cycle())
+        self.assertIsNone(AttentionBinding.objects.get(pk=binding.pk).retry_at)
+        self.central_call_mock.assert_not_called()
+
+    def test_durable_note_still_syncs_when_hardware_cannot_confirm_inhibition(self):
+        binding = self.start()
+        note = self.note(binding)
+        self.control.is_authorized.return_value = False
+        self.control.error = "central_control_disconnected"
+        with patch("apps.station_cash.services.inhibit", side_effect=OSError("USB disconnected")), \
+                patch("apps.cash_acceptor.runtime.get_cash_acceptor_poller") as poller:
+            retry_at = cash.worker_cycle()
+        poller.return_value.fail_closed.assert_called_once()
+        self.assertIsNotNone(retry_at)
+        self.assertEqual(self.central.credits, {str(note.pk): 500})
+        self.assertIsNotNone(OutboxEvent.objects.get(topic="cash.note.credited").delivered_at)
+
     def test_lost_central_reply_retries_same_event_without_duplicate_credit(self):
         binding = self.start()
         note = self.note(binding)
         self.central.lose_reply = True
-        with self.assertRaises(CashSyncError):
-            cash.worker_cycle()
+        cash.worker_cycle()
         self.assertFalse(get_cash_acceptor().snapshot().accepting)
         event = OutboxEvent.objects.get(topic="cash.note.credited")
         self.assertIsNone(event.delivered_at)
@@ -136,8 +183,7 @@ class CashSyncTests(TestCase):
         binding = self.start()
         self.note(binding)
         self.central.offline = True
-        with self.assertRaises(CashSyncError):
-            cash.worker_cycle()
+        cash.worker_cycle()
         self.assertFalse(get_cash_acceptor().snapshot().accepting)
         reset_cash_acceptor()
         self.central.offline = False
@@ -150,20 +196,23 @@ class CashSyncTests(TestCase):
 
     def test_connection_is_checked_without_waiting_for_next_banknote(self):
         binding = self.start()
-        self.central.offline = True
-        with self.assertRaises(CashSyncError):
-            cash.worker_cycle()
+        self.control.is_authorized.return_value = False
+        self.control.error = "central_control_disconnected"
+        self.central_call_mock.reset_mock()
+        cash.worker_cycle()
+        self.central_call_mock.assert_not_called()
         self.assertFalse(get_cash_acceptor().snapshot().accepting)
         self.assertFalse(AcceptedBanknote.objects.exists())
         binding.refresh_from_db()
-        self.assertEqual(binding.last_error, "central_unavailable")
+        self.assertEqual(binding.last_error, "central_control_disconnected")
 
     def test_revoked_station_is_inhibited_without_discarding_durable_note(self):
         binding = self.start()
         self.note(binding)
         self.central.revoked = True
-        with self.assertRaises(CashSyncError):
-            cash.worker_cycle()
+        self.control.is_authorized.return_value = False
+        self.control.error = "station_blocked"
+        cash.worker_cycle()
         self.assertEqual(sum(self.central.credits.values()), 500)
         self.assertFalse(get_cash_acceptor().snapshot().accepting)
 

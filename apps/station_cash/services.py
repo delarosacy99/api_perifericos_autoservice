@@ -14,6 +14,7 @@ from apps.outbox.models import OutboxEvent
 from apps.outbox.services import enqueue_event
 from .central import CashSyncError, central_call
 from .models import AttentionBinding
+from .control import get_control_stream
 
 STATION_LOCK = threading.RLock()
 
@@ -60,6 +61,7 @@ def start_attention(attention_id):
     state = central_call(attention_id, data={})
     if state.get("currency") != settings.CASH_CURRENCY:
         raise CashSyncError("currency_mismatch", "La moneda central no coincide con el billetero.")
+    get_control_stream().authorize(attention_id)
     binding = AttentionBinding.objects.filter(pk=attention_id).first()
     if binding is None:
         if state.get("received_minor"):
@@ -136,6 +138,8 @@ def stop_attention(attention_id):
     binding.last_error = ""
     binding.save(update_fields=["central_snapshot", "sealed", "last_error"])
     notify(binding, "station.collection.sealed", {})
+    if get_control_stream().attention_id == str(binding.pk):
+        get_control_stream().stop()
     return snapshot(binding)
 
 
@@ -153,22 +157,42 @@ def initialize_hardware():
 
 @serialized
 def worker_cycle():
-    for binding in AttentionBinding.objects.filter(sealed=False):
+    next_retry = None
+    for binding in AttentionBinding.objects.select_related("collection").filter(sealed=False):
         if binding.heartbeat_at < timezone.now() - timedelta(seconds=settings.FRONTEND_HEARTBEAT_TIMEOUT_SECONDS):
             try:
                 inhibit(binding)
             except Exception:
                 # Already durable notes must still synchronize with USB unplugged.
                 pass
-        sync_notes(binding)
-        # A live browser alone does not authorize continued acceptance. Probe the
-        # central permission even when no new banknote has arrived.
-        if CashCollectionSession.objects.filter(pk=binding.collection_id, status="accepting").exists():
+        if binding.collection.status == "accepting" and not get_control_stream().is_authorized(binding.pk):
+            code = get_control_stream().error or "central_control_disconnected"
+            changed = binding.last_error != code
+            binding.last_error = code
+            binding.save(update_fields=["last_error"])
             try:
-                central_call(binding.pk, data={})
-            except CashSyncError as exc:
-                binding.last_error = exc.code
-                binding.save(update_fields=["last_error"])
                 inhibit(binding, reason="device_error")
-                notify(binding, "station.cash.pending", {"code": exc.code})
-                raise
+            except Exception:
+                # A disconnected USB or an unsettled device must not prevent
+                # already committed credits from reaching the central ledger.
+                from apps.cash_acceptor.runtime import get_cash_acceptor_poller
+                get_cash_acceptor_poller().fail_closed()
+                next_retry = timezone.now() + timedelta(seconds=5)
+            if changed:
+                notify(binding, "station.cash.pending", {"code": code})
+        try:
+            sync_notes(binding)
+        except CashSyncError:
+            # sync_notes persists a retry deadline before raising.
+            pass
+        if binding.retry_at:
+            pending = OutboxEvent.objects.filter(aggregate_id=str(binding.collection_id),
+                topic="cash.note.credited", delivered_at__isnull=True).exists()
+            if pending:
+                next_retry = binding.retry_at if next_retry is None else min(next_retry, binding.retry_at)
+            else:
+                # Recover a crash after the event ACK was committed but before
+                # clearing the binding deadline; don't spin on a past deadline.
+                binding.retry_at = None
+                binding.save(update_fields=["retry_at"])
+    return next_retry

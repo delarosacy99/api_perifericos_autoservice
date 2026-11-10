@@ -63,7 +63,7 @@ def env_float(name: str, default: float) -> float:
 
 
 APP_NAME = "api_perifericos_autoservice"
-APP_VERSION = "0.8.7"
+APP_VERSION = "0.8.8"
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "development-only-change-me")
 DEBUG = env_bool("DJANGO_DEBUG", True)
@@ -140,6 +140,7 @@ CHANNEL_LAYERS = {
 
 STATION_ID = os.getenv("STATION_ID", "AUTOSERVICE-DEV-001")
 CENTRAL_SYNC_ENABLED = env_bool("CENTRAL_SYNC_ENABLED", False)
+CENTRAL_CONTROL_WS_URL = os.getenv("CENTRAL_CONTROL_WS_URL", "")
 CENTRAL_API_BASE_URL = os.getenv("CENTRAL_API_BASE_URL", "").strip()
 CENTRAL_AGENT_CREDENTIAL = os.getenv("CENTRAL_AGENT_CREDENTIAL", "").strip()
 CENTRAL_TIMEOUT_SECONDS = env_float("CENTRAL_TIMEOUT_SECONDS", 8.0)

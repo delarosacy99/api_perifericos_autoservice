@@ -14,6 +14,11 @@ from .events import door_events
 logger = logging.getLogger(__name__)
 _sync_lock = threading.Lock()
 _worker = None
+_wake_event = threading.Event()
+
+
+def wake_door_sync():
+    _wake_event.set()
 
 
 def sync_pending_door_events(*, limit=50):
@@ -57,18 +62,25 @@ class DoorSyncWorker:
 
     def run(self):
         while not self.stop_event.is_set():
+            _wake_event.clear()
+            timeout = None
             try:
                 close_old_connections()
                 sync_pending_door_events()
+                pending = door_events().filter(delivered_at__isnull=True).order_by("payload__sequence").first()
+                if pending is not None:
+                    timeout = max(0, (pending.retry_at - timezone.now()).total_seconds()) if pending.retry_at else 0
             except Exception:
                 # Device telemetry failures do not alter cash receipt or ACKs.
                 logger.exception("No se completó la sincronización de eventos de puerta.")
+                timeout = 5
             finally:
                 close_old_connections()
-            self.stop_event.wait(1)
+            _wake_event.wait(timeout)
 
     def stop(self):
         self.stop_event.set()
+        _wake_event.set()
         self.thread.join(timeout=2)
 
 

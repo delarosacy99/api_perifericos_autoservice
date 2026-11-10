@@ -98,7 +98,9 @@ class CashAcceptorPoller:
                 from django.utils import timezone
                 from apps.station_cash.models import AttentionBinding
                 binding = AttentionBinding.objects.filter(collection=collection, sealed=False).first()
+                from apps.station_cash.control import get_control_stream
                 if (not binding or binding.last_error or collection.metadata.get("inhibit_requested")
+                    or not get_control_stream().is_authorized(binding.pk)
                     or binding.heartbeat_at < timezone.now() - timedelta(seconds=settings.FRONTEND_HEARTBEAT_TIMEOUT_SECONDS)):
                     from .services import stop_collection
                     stop_collection(collection.pk, reason="frontend_disconnected")

@@ -11,6 +11,7 @@ from django.db import transaction
 
 from .events import door_events, door_snapshot
 from .models import DoorMonitorState
+from apps.outbox.realtime import subscribe, unsubscribe
 
 
 @database_sync_to_async
@@ -69,28 +70,36 @@ class StationEventsConsumer(AsyncJsonWebsocketConsumer):
             self.snapshot_sequence = latest.payload["sequence"] if latest else 0
             self.authenticated = True
             self.timeout_task.cancel()
+            await self.channel_layer.group_add("station.front", self.channel_name)
+            subscribe("station.front", self.channel_name)
             await self.send_json({"type": "snapshot", "cursor": str(previous.pk) if previous else None,
                                   "snapshot_sequence": self.snapshot_sequence, "data": snapshot})
-            self.pump_task = asyncio.create_task(self.pump())
+            await self.flush_events()
         elif isinstance(content, dict) and content.get("type") == "heartbeat":
+            await self.channel_layer.group_add("station.front", self.channel_name)
             await self.send_json({"type": "heartbeat", "alive": True})
 
-    async def pump(self):
-        try:
-            while True:
-                for event in await events_after(self.sequence):
-                    sequence = event["payload"]["sequence"]
-                    await self.send_json({"type": "event", "cursor": str(event["id"]),
-                                          "sequence": sequence, "topic": event["topic"],
-                                          "occurred_at": event["occurred_at"].isoformat(),
-                                          "replayed": sequence <= self.snapshot_sequence,
-                                          "data": event["payload"]})
-                    self.sequence = sequence
-                await asyncio.sleep(.25)
-        except Exception:
-            await self.close(code=1011)
+    async def flush_events(self):
+        while True:
+            events = await events_after(self.sequence)
+            for event in events:
+                sequence = event["payload"]["sequence"]
+                await self.send_json({"type": "event", "cursor": str(event["id"]),
+                                      "sequence": sequence, "topic": event["topic"],
+                                      "occurred_at": event["occurred_at"].isoformat(),
+                                      "replayed": sequence <= self.snapshot_sequence,
+                                      "data": event["payload"]})
+                self.sequence = sequence
+            if len(events) < 100:
+                return
+
+    async def outbox_ready(self, event):
+        await self.flush_events()
 
     async def disconnect(self, close_code):
+        if getattr(self, "authenticated", False):
+            unsubscribe("station.front", self.channel_name)
+            await self.channel_layer.group_discard("station.front", self.channel_name)
         for task in (getattr(self, "timeout_task", None), getattr(self, "pump_task", None)):
             if task:
                 task.cancel()

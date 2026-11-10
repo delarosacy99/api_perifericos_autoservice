@@ -1,4 +1,5 @@
 from uuid import uuid4
+import asyncio
 
 from asgiref.sync import async_to_sync
 from channels.routing import URLRouter
@@ -65,6 +66,35 @@ class CashWebsocketTests(TransactionTestCase):
         async_to_sync(run)()
         self.second.refresh_from_db()
         self.assertIsNone(self.second.delivered_at)
+
+    def test_hardware_thread_pushes_on_the_subscribers_event_loop(self):
+        def produce():
+            from django.db import close_old_connections
+            from apps.outbox.services import enqueue_event
+            close_old_connections()
+            try:
+                enqueue_event(topic="cash.note.credited", aggregate_type="cash_collection",
+                              aggregate_id=str(self.collection.pk), payload={"denomination_minor": 500})
+            finally:
+                close_old_connections()
+        async def run():
+            loop = asyncio.get_running_loop()
+            previous = loop.get_debug()
+            loop.set_debug(True)
+            ws = self.connection()
+            try:
+                await ws.connect()
+                await ws.send_json_to({"type": "authenticate", "api_key": settings.LOCAL_API_KEY,
+                                       "attention_id": str(self.attention)})
+                await ws.receive_json_from()
+                await asyncio.to_thread(produce)
+                event = await ws.receive_json_from(timeout=.5)
+                self.assertEqual(event["topic"], "cash.note.credited")
+                self.assertEqual(event["data"]["denomination_minor"], 500)
+            finally:
+                await ws.disconnect()
+                loop.set_debug(previous)
+        async_to_sync(run)()
 
     def test_cursor_from_other_attention_is_rejected(self):
         unrelated = OutboxEvent.objects.create(topic="station.cash.synced", aggregate_type="cash_collection", aggregate_id=str(uuid4()), payload={})

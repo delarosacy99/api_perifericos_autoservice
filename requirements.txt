@@ -6,3 +6,4 @@ django-cors-headers==4.9.0
 python-dotenv==1.2.3
 pyserial==3.5
 cryptography==50.0.1
+websockets==16.0

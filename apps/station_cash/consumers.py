@@ -9,6 +9,7 @@ from django.conf import settings
 from django.db.models import Q
 
 from apps.outbox.models import OutboxEvent
+from apps.outbox.realtime import subscribe, unsubscribe
 from .central import CashSyncError
 from .services import binding_for, heartbeat, snapshot
 
@@ -64,25 +65,34 @@ class CashEventsConsumer(AsyncJsonWebsocketConsumer):
                 state, self.cursor = await connect_state(self.attention_id, content.get("cursor"))
                 self.authenticated = True
                 self.timeout_task.cancel()
+                self.group_name = "cash." + state["collection_id"]
+                await self.channel_layer.group_add(self.group_name, self.channel_name)
+                subscribe(self.group_name, self.channel_name)
                 await self.send_json({"type": "snapshot", "cursor": self.cursor[1] if self.cursor else None, "data": state})
-                self.pump_task = asyncio.create_task(self.pump())
+                await self.flush_events()
             elif content.get("type") == "heartbeat":
                 await database_sync_to_async(heartbeat)(self.attention_id)
+                await self.channel_layer.group_add(self.group_name, self.channel_name)
                 await self.send_json({"type": "heartbeat", "alive": True})
         except (ValueError, KeyError, TypeError, CashSyncError):
             await self.close(code=4401)
 
-    async def pump(self):
-        try:
-            while True:
-                for event in await events_after(self.attention_id, self.cursor):
-                    await self.send_json({"type": "event", "cursor": str(event["id"]), "topic": event["topic"], "data": event["payload"]})
-                    self.cursor = (event["occurred_at"].isoformat(), str(event["id"]))
-                await asyncio.sleep(0.5)
-        except Exception:
-            await self.close(code=1011)
+    async def flush_events(self):
+        while True:
+            events = await events_after(self.attention_id, self.cursor)
+            for event in events:
+                await self.send_json({"type": "event", "cursor": str(event["id"]), "topic": event["topic"], "data": event["payload"]})
+                self.cursor = (event["occurred_at"].isoformat(), str(event["id"]))
+            if len(events) < 100:
+                return
+
+    async def outbox_ready(self, event):
+        await self.flush_events()
 
     async def disconnect(self, close_code):
+        if getattr(self, "group_name", None):
+            unsubscribe(self.group_name, self.channel_name)
+            await self.channel_layer.group_discard(self.group_name, self.channel_name)
         for task in (getattr(self, "timeout_task", None), getattr(self, "pump_task", None)):
             if task:
                 task.cancel()
